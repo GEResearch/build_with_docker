@@ -1,0 +1,12 @@
+#ARG_FROM will be replaced with the value from BUILDER_BASEIMAGE
+FROM ARG_FROM
+LABEL maintainer "maintainer@example.com"
+
+## Install dependencies necessary to run tests for your ROS project
+## BWD requires catkin-tools package to be installed
+## If your project has other requirements, add them here
+RUN set -ex \
+    && apt-get update && apt-get install \
+        --no-install-recommends --no-install-suggests -y \
+        python-catkin-tools \
+    && rm -rf /var/lib/apt/lists/*

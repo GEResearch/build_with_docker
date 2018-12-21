@@ -1,0 +1,22 @@
+#ARG_FROM will be replaced with the value from RUN_BASEIMAGE
+FROM ARG_FROM
+MAINTAINER Maintainer Name <maintainer@example.com>
+
+##Install dependencies necessary to run this microservice/ROS project
+##For example, ROS bridge
+#RUN set -ex \
+#    && apt-get update && apt-get install \
+#        --no-install-recommends --no-install-suggests -y \
+#        ros-kinetic-rosbridge-server \
+#    && rm -rf /var/lib/apt/lists/*
+
+#Copy previously built binaries into a run-time image
+ADD bin/ARG_ARCH/install          /ARG_NAME/install
+
+#Create entrypoint script and pass some env vars as needed
+ENV ARCH ARG_ARCH
+ENV NAME ARG_NAME
+
+ADD bwd/src/entrypoint-ros.sh  /ARG_NAME/entrypoint-ros.sh
+
+ENTRYPOINT ["/ARG_NAME/entrypoint-ros.sh"]

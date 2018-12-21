@@ -1,0 +1,36 @@
+########################################
+##### build_with_docker commands #######
+########################################
+
+### development commands
+
+make info             evaluates and shows values of key parameters defined in Makefile -> Makefile.in
+make build-image      creates Docker image for development purposes (aka "builder" image)
+make build-shell      creates and shells into builder image for development purposes
+make build-shellenter joins existing builder image's container
+make build-push       publishes builder image to DTR in case it needs to be shared with others
+make build            builds binaries within the builder image
+make test             runs unit tests & mocks within the builder image
+make package          builds Debian package within the builder image
+make scan             runs static code analysis of your code within the builder
+                      image. Only hooks provided today (i.e. SCAN_SCRIPT variable)
+                      so each project needs to provide its scanning
+make image            builds runtime Docker image
+make push             publishes runtime image to DTR
+make clean            removes all build artifacts and images (builder and runtime)
+make clean-bin        removes only build artifacts (i.e. no images are removed)
+make all-build        make build for all supported architectures
+make all-package      make package for all supported architectures
+make all-image        make image for all supported architectures
+make all-push         make push for all supported architectures
+
+### run commands
+
+make run              downloads and launches the app (configured to be deployed using Docker Compose)
+make pull             downloads the app without starting an app based on the configuration of make run command
+make stop             stops the app that was started by make run
+make logs             shows logs of the app that was started by make run
+
+
+### more details -> https://github.com/GERobotics/build_with_docker/blob/master/docs/api.md
+

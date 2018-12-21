@@ -1,0 +1,481 @@
+## Build With Docker - Generic Makefile include file providing CLI for
+##                     building, testing, packaging and running tools
+##
+## See Guides and API Reference at https://github.com/GERobotics/build_with_docker
+
+
+###### Variables with sensible defaults but can be overridden by project's Makefile:
+
+NAME        ?= yourproject
+VERSION     ?= 0.0.0
+TAGS        ?= latest  #tags to tag runtime image with (primarily used to mark your ver as latest)
+
+BWD_PREFIX_DIR ?= bwd
+CONFIG_DIR     ?= $(BWD_PREFIX_DIR)/config
+RUN_CONFIG_DIR ?= $(BWD_PREFIX_DIR)/run
+BWD_SRC_DIR    ?= $(BWD_PREFIX_DIR)/src
+
+
+DOCKER_CMD  ?= $(shell ./$(BWD_SRC_DIR)/bwd-find-docker.sh)
+DOCKERC_CMD ?= $(shell ./$(BWD_SRC_DIR)/bwd-find-docker-compose.sh)
+
+ARCH        ?= amd64
+ALL_ARCH    ?= amd64 arm arm64
+
+# If using a DTR, set this to be the URL of your registry + organization
+# ex: dtr.example.com/myorg
+REGISTRY    ?= example_registry
+
+NETWORK     ?= $(NAME)_net
+
+BUILDER_DOCKERFILE ?= $(CONFIG_DIR)/Dockerfile.build
+RUN_DOCKERFILE     ?= $(CONFIG_DIR)/Dockerfile.run
+
+# Docker-Compose related vars
+APPCONFIG   ?= $(NAME)-$(VERSION).yml
+RUN_PARAMS  ?= -d  #run Docker-Compose in background mode by default
+LOGS_PARAMS ?= -f  #follow logs by default
+PULL_PARAMS ?=
+DOWN_PARAMS ?=
+
+# ROS related vars
+IS_ROS             ?= no
+ROS_DIST_VER       ?= kinetic
+OS_VERSION         ?= xenial
+START_ROSCORE      ?= yes
+PAUSE_FOR_ROSCORE  ?= 1s      #time to pause so roscore can start before the app starts
+RUN_ROSCORE_PARAMS ?= -d      #run Docker-Compose file for roscore in background mode by default
+OS_VERSION         ?= xenial
+
+# Defaults for base images and scripts
+BUILDSHELL_SCRIPT  ?= ./$(BWD_SRC_DIR)/provision_container.sh
+ifeq ($(IS_ROS), yes)
+  ifeq ($(ARCH),amd64)
+      RUN_BASEIMAGE     ?= ros:$(ROS_DIST_VER)-ros-core
+      BUILDER_BASEIMAGE ?= osrf/ros:$(ROS_DIST_VER)-desktop-full-$(OS_VERSION)
+  endif
+  ifeq ($(ARCH),arm)
+      RUN_BASEIMAGE     ?= osrf/ros-base-armhf:$(ROS_DIST_VER)
+      BUILDER_BASEIMAGE ?= osrf/ros-base-armhf:$(ROS_DIST_VER)
+  endif
+  ifeq ($(ARCH),arm64)
+      RUN_BASEIMAGE     ?= osrf/ros-base-arm64:$(ROS_DIST_VER)
+      BUILDER_BASEIMAGE ?= osrf/ros-base-arm64:$(ROS_DIST_VER)
+  endif
+
+  BUILD_SCRIPT       ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/build-ros.sh
+  TEST_SCRIPT        ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/test-ros.sh
+  PACKAGE_SCRIPT     ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/package-ros.sh
+  SCAN_SCRIPT        ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/scan-ros.sh
+
+else
+
+  #For non ROS projects - assumption is that Ubuntu is the base image
+  #If necessary, override in project's Makefile that includes this Makefile.in
+
+  ifndef OS_VERSION
+     $(warning OS_VERSION variable is not set in your Makefile. It might an issue later for you)
+  endif
+
+  ifeq ($(ARCH),amd64)
+      BUILDER_BASEIMAGE ?= ubuntu:$(OS_VERSION)
+      RUN_BASEIMAGE     ?= ubuntu:$(OS_VERSION)
+  endif
+  ifeq ($(ARCH),arm)
+      BUILDER_BASEIMAGE ?= osrf/ubuntu_armhf:$(OS_VERSION)
+      RUN_BASEIMAGE     ?= osrf/ubuntu_armhf:$(OS_VERSION)
+  endif
+  ifeq ($(ARCH),arm64)
+      BUILDER_BASEIMAGE ?= osrf/ubuntu_arm64:$(OS_VERSION)
+      RUN_BASEIMAGE     ?= osrf/ubuntu_arm64:$(OS_VERSION)
+  endif
+
+  BUILD_SCRIPT       ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/build.sh
+  TEST_SCRIPT        ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/test.sh
+  PACKAGE_SCRIPT     ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/package.sh
+  SCAN_SCRIPT        ?= ./$(BWD_SRC_DIR)/provision_container.sh $(BWD_SRC_DIR)/scan.sh
+
+endif
+
+#Enable fat GUI when entering builder container for dev/debug purposes ?
+ifeq ($(BUILDER_ENABLE_GUI),yes)
+    BUILDER_SHELL_PARAMS += --env="DISPLAY" --env="QT_X11_NO_MITSHM=1" -v /tmp/.X11-unix:/tmp/.X11-unix
+    BUILDER_ENTER_PARAMS += --env="DISPLAY" --env="QT_X11_NO_MITSHM=1"
+endif
+
+
+###### Variables and make instructions that project's developers typically should not be concerned about:
+
+RUN_IMAGE_NOARCH      ?= $(REGISTRY)/$(NAME)
+RUN_IMAGE             ?= $(RUN_IMAGE_NOARCH)-$(ARCH)
+
+BUILDER_IMAGE_NOARCH  ?= $(REGISTRY)/$(NAME)-builder
+BUILDER_IMAGE         ?= $(BUILDER_IMAGE_NOARCH)-$(ARCH)
+
+# On linux, run the container with the current uid, so files produced from
+# within the container are owned by the current user, rather than root.
+USER_ID     = $$(id -u)
+USER        = $$(id -nu)
+GROUP_ID    = $$(id -g)
+GROUP       = $$(id -ng)
+GROUPS      ?=               #additional groups that user inside of a container needs to be belong to
+#DOCKER_USER =  --user=$(USER_ID):$(GROUP_ID)
+
+# Pass proxy information into docker container
+RUN_PROXY   ?= -e http_proxy=$(http_proxy) -e https_proxy=$(https_proxy) -e no_proxy=$(no_proxy)
+BUILD_PROXY ?= --build-arg http_proxy=$$http_proxy --build-arg https_proxy=$$https_proxy --build-arg no_proxy=$$no_proxy
+
+help:
+	@cat $(BWD_SRC_DIR)/help
+
+# Show key config
+info-%:
+	@$(MAKE) --no-print-directory ARCH=$* info
+
+info:
+	@echo ""
+	@echo "**************************"
+	@echo "*** Project's Make Config:"
+	@echo "**************************"
+	@echo "    CONFIG_DIR:         $(CONFIG_DIR)"
+	@echo "    RUN_CONFIG_DIR:     $(RUN_CONFIG_DIR)"
+	@echo "    BWD_SRC_DIR:        $(BWD_SRC_DIR)"
+	@echo "    DOCKER_CMD:         $(DOCKER_CMD)"
+	@echo "    DOCKERC_CMD:        $(DOCKERC_CMD)"
+	@echo "    DEV CONTAINER USER: user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP)) addl. groups=$(GROUPS)"
+	@echo "    NAME:               $(NAME)"
+	@echo "    VERSION:            $(VERSION)"
+	@echo "    TAGS:               $(TAGS)"
+	@echo "    ARCH:               $(ARCH)"
+	@echo "    PKGS:               $(PKGS)"
+	@echo "    REGISTRY:           $(REGISTRY)"
+	@echo "    BUILDER_BASEIMAGE:  $(BUILDER_BASEIMAGE)"
+	@echo "    BUILDER_DOCKERFILE: $(BUILDER_DOCKERFILE)"
+	@echo "    BUILDER_IMAGE:      $(BUILDER_IMAGE):$(VERSION)"
+	@echo "    RUN_BASEIMAGE:      $(RUN_BASEIMAGE)"
+	@echo "    RUN_DOCKERFILE:     $(RUN_DOCKERFILE)"
+	@echo "    RUN_IMAGE:          $(RUN_IMAGE):$(VERSION)"
+	@echo "    ALL_ARCH:           $(ALL_ARCH)"
+	@echo "    OS_VERSION:         $(OS_VERSION)"
+	@echo "    APPCONFIG:          $(APPCONFIG)"
+	@echo "    RUN_PARAMS:         $(RUN_PARAMS)"
+	@echo "    DOWN_PARAMS:        $(DOWN_PARAMS)"
+	@echo "    PULL_PARAMS:        $(PULL_PARAMS)"
+	@echo "    LOGS_PARAMS:        $(LOGS_PARAMS)"
+	@echo "    RUN_PROXY:          $(RUN_PROXY)"
+	@echo "    BUILD_PROXY:        $(BUILD_PROXY)"
+	@echo "    IS_ROS:             $(IS_ROS)"
+	@echo "    ROS_DIST_VER:       $(ROS_DIST_VER)"
+	@echo "    START_ROSCORE:      $(START_ROSCORE)"
+	@echo "    PAUSE_FOR_ROSCORE:  $(PAUSE_FOR_ROSCORE)"
+	@echo "    BUILDSHELL_SCRIPT:  $(BUILDSHELL_SCRIPT)"
+	@echo "    BUILD_SCRIPT:       $(BUILD_SCRIPT)"
+	@echo "    TEST_SCRIPT:        $(TEST_SCRIPT)"
+	@echo "    PACKAGE_SCRIPT:     $(PACKAGE_SCRIPT)"
+	@echo "    SCAN_SCRIPT:        $(SCAN_SCRIPT)"
+	@echo "    CATKIN_ARGS:        $(CATKIN_ARGS)"
+	@echo "    build_with_docker ver:" & git submodule status $(BWD_SRC_DIR)
+	@echo "    "
+
+# Builds the binary in a Docker buildpack and copy to volume mount
+build-%:
+	@$(MAKE) --no-print-directory ARCH=$* build
+
+build-image-%:
+	@$(MAKE) --no-print-directory ARCH=$* build-image
+
+build-shell-%:
+	@$(MAKE) --no-print-directory ARCH=$* build-shell
+
+build-shellenter-%:
+	@$(MAKE) --no-print-directory ARCH=$* build-shellenter
+
+# Runs testing in a Docker buildpack
+test-%:
+	@$(MAKE) --no-print-directory ARCH=$* test
+
+# Builds Debian package in a Docker buildpack and copy to volume mount
+package-%:
+	@$(MAKE) --no-print-directory ARCH=$* package
+
+# Builds the docker image and tags it appropriately
+image-%:
+	@$(MAKE) --no-print-directory ARCH=$* image
+
+# Pushes the build docker image to the specified registry
+push-%:
+	@$(MAKE) --no-print-directory ARCH=$* push
+
+# Builds all the binaries in a Docker buildpack and copies to volume mount
+all-build: $(addprefix build-, $(ALL_ARCH))
+
+# Builds Debian packages for all arch in a Docker buildpack and copies to volume mount
+all-package: $(addprefix package-, $(ALL_ARCH))
+
+# Builds all docker images and tags them appropriately
+all-image: $(addprefix image-, $(ALL_ARCH))
+
+# Builds and pushes all images to registry
+all-push: $(addprefix push-, $(ALL_ARCH))
+
+
+build-image: $(BUILDER_DOCKERFILE)
+	@echo "Creating builder image '$(BUILDER_IMAGE):$(VERSION)' with cmd '$(DOCKER_CMD)' ..."
+	@sed \
+            -e 's|ARG_NAME|$(NAME)|g' \
+            -e 's|ARG_ARCH|$(ARCH)|g' \
+            -e 's|ARG_FROM|$(BUILDER_BASEIMAGE)|g' \
+            -e 's|ARG_BUILDER_BASEIMAGE|$(BUILDER_BASEIMAGE)|g' \
+            -e 's|ARG_BUILDER_IMAGE|$(BUILDER_IMAGE):$(VERSION)|g' \
+            -e 's|ARG_RUN_BASEIMAGE|$(RUN_BASEIMAGE)|g' \
+            -e 's|ARG_RUN_IMAGE|$(RUN_IMAGE):$(VERSION)|g' \
+            $(BUILDER_DOCKERFILE) > .dockerfile-$(ARCH)-build
+	@$(DOCKER_CMD) build $(BUILD_PROXY) --force-rm  $(BUILDER_IMAGE_PARAMS) -t $(BUILDER_IMAGE):$(VERSION) -f .dockerfile-$(ARCH)-build .
+
+build-shell: $(BUILDSHELL_SCRIPT)
+	@echo "Creating & entering builder container (i.e. sandbox) '$(NAME)-builder'  with cmd '$(DOCKER_CMD)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) run                                                            \
+            -it                                                                \
+            --rm                                                               \
+            --name="$(NAME)-builder" \
+            -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+            $(BUILDER_SHELL_PARAMS)                                                    \
+            $(RUN_PROXY)                                                       \
+            -v $$(pwd):/$(NAME)                                                \
+            -w /$(NAME)                                                        \
+            $(BUILDER_IMAGE):$(VERSION)                                                     \
+            /bin/sh -c "                                                       \
+                OS_VERSION=$(OS_VERSION)                                       \
+                ROS_DIST_VER=$(ROS_DIST_VER)                                     \
+                ARCH=$(ARCH)                                                   \
+                VERSION=$(VERSION)                                             \
+                NAME=$(NAME)                                                   \
+                PKGS='$(PKGS)'                                                 \
+                CATKIN_ARGS='$(CATKIN_ARGS)'                                     \
+                $(BUILDSHELL_SCRIPT)                             \
+            "
+
+build-shellenter: $(BUILDSHELL_SCRIPT)
+	@echo "Entering builder container (i.e. sandbox) '$(NAME)-builder'  with cmd '$(DOCKER_CMD)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) exec                                                            \
+            -it                                                                \
+            -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+            $(BUILDER_ENTER_PARAMS)                                                    \
+            $(NAME)-builder \
+            /bin/sh -c "                                                       \
+                OS_VERSION=$(OS_VERSION)                                       \
+                ROS_DIST_VER=$(ROS_DIST_VER)                                     \
+                ARCH=$(ARCH)                                                   \
+                VERSION=$(VERSION)                                             \
+                NAME=$(NAME)                                                   \
+                PKGS='$(PKGS)'                                               \
+                CATKIN_ARGS='$(CATKIN_ARGS)'                                     \
+                $(BUILDSHELL_SCRIPT)                             \
+            "
+
+
+
+build: bin/$(ARCH)/$(NAME)
+bin/$(ARCH)/$(NAME): $(BUILD_SCRIPT)
+	@echo "building: '$@' for arch '$(ARCH)' using  builder container '$(BUILDER_IMAGE):$(VERSION)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) run                                                            \
+	    -t                                                                 \
+	    --rm                                                           \
+            -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+            $(BUILD_PARAMS)                                                    \
+	    $(RUN_PROXY)                                                       \
+	    -v $$(pwd):/$(NAME)                                     \
+	    -v $(HOME):$(HOME) \
+	    -w /$(NAME)                                             \
+	    $(BUILDER_IMAGE):$(VERSION)                                                     \
+	    /bin/sh -c "                                                       \
+	        OS_VERSION=$(OS_VERSION)                                       \
+	        ROS_DIST_VER=$(ROS_DIST_VER)                                     \
+	        ARCH=$(ARCH)                                                   \
+	        VERSION=$(VERSION)                                             \
+		NAME=$(NAME)                                                   \
+                PKGS='$(PKGS)'                                               \
+                CATKIN_ARGS='$(CATKIN_ARGS)'                                     \
+	        $(BUILD_SCRIPT)                                            \
+	    "
+	@echo "built: $@ for arch: $(ARCH)"
+
+test: $(TEST_SCRIPT)
+	@echo "running tests for arch '$(ARCH)' using  builder container '$(BUILDER_IMAGE):$(VERSION)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) run                                                            \
+	   -t                                                                  \
+	   --rm                                                                \
+           -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+           $(TEST_PARAMS)                                                    \
+	   $(RUN_PROXY)                  	                               \
+	   -v $$(pwd):/$(NAME)                                      \
+	   -v $(HOME):$(HOME) \
+	   -w /$(NAME)                                              \
+	   $(BUILDER_IMAGE):$(VERSION)                                                      \
+	   /bin/sh -c "                                                        \
+               OS_VERSION=$(OS_VERSION)                                       \
+               ROS_DIST_VER=$(ROS_DIST_VER)                                     \
+	       ARCH=$(ARCH)                                                    \
+	       VERSION=$(VERSION)                                              \
+	       NAME=$(NAME)                                                    \
+               PKGS='$(PKGS)'                                                \
+               CATKIN_ARGS='$(CATKIN_ARGS)'                                     \
+	       $(TEST_SCRIPT)                                                 \
+	   "
+
+package: bin/$(ARCH)/$(NAME) $(PACKAGE_SCRIPT)
+	@echo "packaging for arch '$(ARCH)' using  builder container '$(BUILDER_IMAGE):$(VERSION)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) run                                                            \
+	   -t                                                                  \
+	   --rm                                                                \
+           -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+           $(PACKAGE_PARAMS)                                                   \
+	   $(RUN_PROXY)                                                        \
+	   -v $$(pwd):/$(NAME)                                      \
+	   -v $(HOME):$(HOME) \
+	   -w /$(NAME)                                              \
+	   $(BUILDER_IMAGE):$(VERSION)                                                      \
+	   /bin/sh -c "                                                        \
+               OS_VERSION=$(OS_VERSION)                                       \
+               ROS_DIST_VER=$(ROS_DIST_VER)                                     \
+	       ARCH=$(ARCH)                                                    \
+	       VERSION=$(VERSION)                                              \
+	       NAME=$(NAME)                                                    \
+               PKGS='$(PKGS)'                                                \
+               CATKIN_ARGS='$(CATKIN_ARGS)'                                     \
+	       $(PACKAGE_SCRIPT)                                              \
+	   "
+
+image: $(RUN_DOCKERFILE)
+	@echo "Creating runtime image '$(RUN_IMAGE):$(VERSION)' with cmd '$(DOCKER_CMD)' ..."
+	@sed \
+	    -e 's|ARG_NAME|$(NAME)|g' \
+	    -e 's|ARG_ARCH|$(ARCH)|g' \
+	    -e 's|ARG_FROM|$(RUN_BASEIMAGE)|g' \
+            -e 's|ARG_BUILDER_BASEIMAGE|$(BUILDER_BASEIMAGE)|g' \
+            -e 's|ARG_BUILDER_IMAGE|$(BUILDER_IMAGE):$(VERSION)|g' \
+            -e 's|ARG_RUN_BASEIMAGE|$(RUN_BASEIMAGE)|g' \
+            -e 's|ARG_RUN_IMAGE|$(RUN_IMAGE):$(VERSION)|g' \
+	    $(RUN_DOCKERFILE) > .dockerfile-$(ARCH)
+	@$(DOCKER_CMD) build $(BUILD_PROXY) --force-rm $(RUN_IMAGE_PARAMS) -t $(RUN_IMAGE):$(VERSION) -f .dockerfile-$(ARCH) .
+	@echo "Taging runtime image with tags '$(TAGS)' ..."
+	for tag in $(TAGS); \
+	do \
+	$(DOCKER_CMD) tag $(RUN_IMAGE):$(VERSION) $(RUN_IMAGE):$$tag; \
+	done
+
+push:
+	@echo "Pushing runtime image '$(RUN_IMAGE):$(VERSION)' ..."
+	@$(DOCKER_CMD) push $(RUN_IMAGE):$(VERSION)
+	@echo "Pushing runtime image tags '$(TAGS)' ..."
+	for tag in $(TAGS); \
+	do \
+	$(DOCKER_CMD) push $(RUN_IMAGE):$$tag; \
+	done
+
+build-push:
+	@echo "Pushing builder image '$(BUILDER_IMAGE):$(VERSION)' ..."
+	@$(DOCKER_CMD) push $(BUILDER_IMAGE):$(VERSION)
+
+.PHONY: scan
+scan: $(SCAN_SCRIPT)
+	@echo "running scans for arch '$(ARCH)' using  builder container '$(BUILDER_IMAGE):$(VERSION)'"
+	@echo "as the host OS user=$(USER_ID)($(USER)) group=$(GROUP_ID)($(GROUP))"
+	@$(DOCKER_CMD) run                                                            \
+	    -t                                                                 \
+	    --rm                                                               \
+            -e USER="$(USER)" -e USER_ID="$(USER_ID)" -e GROUP="$(GROUP)" -e GROUP_ID="$(GROUP_ID)" -e GROUPS="$(GROUPS)" \
+	    $(RUN_PROXY)                                                       \
+	    -v $$(pwd):/$(NAME)                                     \
+	    -w /$(NAME)                                             \
+	    $(BUILDER_IMAGE):$(VERSION)                                                     \
+	    /bin/sh -c "                                                       \
+			$(SCAN_SCRIPT) $(SRC_DIR)                              \
+		"
+	@echo "Done running scans"
+
+### Build artifacts cleanup
+clean-all: clean clean-image
+
+clean-image:
+	@if [ $(shell $(DOCKER_CMD) ps -a | grep $(RUN_IMAGE_NOARCH) | wc -l) != 0 ]; then \
+		$(DOCKER_CMD) ps -a | grep $(RUN_IMAGE_NOARCH) | awk '{print $$1 }' | xargs $(DOCKER_CMD) rm -f; \
+	fi
+	@if [ $(shell $(DOCKER_CMD) images | grep $(RUN_IMAGE_NOARCH) | wc -l) != 0 ]; then \
+		$(DOCKER_CMD) images | grep $(RUN_IMAGE_NOARCH) | awk '{print $$3}' | xargs $(DOCKER_CMD) rmi -f || true; \
+	fi
+	rm -rf .image-* .dockerfile-* .push-* .app_* .build*.sh .test*.sh .package*.sh
+
+clean:
+	rm -rf bin
+
+
+### App run targets
+###    These are mostly for development purposes because eventually an app will be run via docker-compose
+###     without the supporting source code
+
+run-%:
+	@$(MAKE) --no-print-directory ARCH=$* run
+
+run: stop runnetwork runroscore
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/$(APPCONFIG)  up $(RUN_PARAMS)"
+
+runnetwork:
+	@if [ $(shell $(DOCKER_CMD) network ls | grep $(NETWORK) | wc -l) -eq 0 ]; then \
+		$(DOCKER_CMD) network create $(NETWORK); \
+	fi
+
+runroscore-%:
+	@$(MAKE) --no-print-directory ARCH=$* runroscore
+
+runroscore:
+ifeq ($(IS_ROS), yes)
+  ifeq ($(START_ROSCORE),yes)
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/roscore.yml  up $(RUN_ROSCORE_PARAMS)"
+	@echo "pausing $(PAUSE_FOR_ROSCORE) for roscore to start..."
+	@sleep $(PAUSE_FOR_ROSCORE)
+  endif
+endif
+
+
+
+pull-%:
+	@$(MAKE) --no-print-directory ARCH=$* pull
+
+pull:
+ifeq ($(IS_ROS), yes)
+  ifeq ($(START_ROSCORE), yes)
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/roscore.yml   pull $(PULL_PARAMS)"
+  endif
+endif
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/$(APPCONFIG)  pull $(PULL_PARAMS)"
+
+
+
+stop-%:
+	@$(MAKE) --no-print-directory ARCH=$* stop
+
+stop:
+ifeq ($(IS_ROS), yes)
+  ifeq ($(START_ROSCORE), yes)
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/roscore.yml   down $(DOWN_PARAMS)"
+	@/bin/sh -c "ARCH=$(ARCH) docker-compose -f $(RUN_CONFIG_DIR)/roscore.yml   rm -f"
+  endif
+endif
+	@/bin/sh -c "ARCH=$(ARCH) $(DOCKERC_CMD) -f $(RUN_CONFIG_DIR)/$(APPCONFIG)  down $(DOWN_PARAMS)"
+	@/bin/sh -c "ARCH=$(ARCH) docker-compose -f $(RUN_CONFIG_DIR)/$(APPCONFIG)  rm -f"
+
+
+
+logs-%:
+	@$(MAKE) --no-print-directory ARCH=$* logs
+
+logs:
+	@/bin/sh -c "ARCH=$(ARCH) docker-compose -f $(RUN_CONFIG_DIR)/$(APPCONFIG)  logs $(LOGS_PARAMS)"
+
+
