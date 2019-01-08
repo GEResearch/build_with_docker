@@ -29,5 +29,5 @@ Features include:
 [APIs Reference](docs/api.md)
 
 Example:
-> see [template app](https://github.com/GERobotics/template_app_ros) for an
+> see [tutorial app](https://github.com/GERobotics/tutorial_app_ros) for an
 > example using `build_with_docker` with a ROS workspace.
