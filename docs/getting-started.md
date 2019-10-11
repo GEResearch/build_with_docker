@@ -22,7 +22,7 @@ for details of each _make_ command
 
 ## Example app using `build_with_docker`
 
-All repositories of the [`tutorial_app`](//github.com/GERobotics/template_app_ros)
+All repositories of the [`tutorial_app`](//github.com/GEResearch/template_app_ros)
 (tutorial ROS app) have been fully instrumented with `build_with_docker`
 
 ## Step-by-Step Guide
@@ -38,7 +38,7 @@ your new repository. Key command:
 
 ~~~bash
 $ mkdir bwd
-$ git  submodule add git@github.com:GERobotics/build_with_docker.git bwd/src
+$ git  submodule add git@github.com:GEResearch/build_with_docker.git bwd/src
 $ mkdir bwd/config bwd/run  # Folder to hold project-specific bwd configuration & scripts
 ~~~
 
